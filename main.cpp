@@ -1,88 +1,77 @@
+﻿#include <windows.h>
 #include <iostream>
+#include <sstream>
 #include <vector>
 #include <string>
-#include <unistd.h> 
-#include <sys/wait.h> 
-#include <fcntl.h>
-#include <cstdlib>
-using namespace std;
 
-bool estePrim(int numar) {
-    if (numar < 2) return false;
-    for (int i = 2; i * i <= numar; ++i) {
-        if (numar % i == 0) return false;
+void createChildProcesses(std::vector<std::pair<HANDLE, HANDLE>>& pipes, int start, int end, int step) {
+    for (int i = 0; i < 10; ++i) {
+        int rangeStart = start + i * step;
+        int rangeEnd = rangeStart + step;
+
+        // Creare pipe pentru comunicare
+        HANDLE readPipe, writePipe;
+        SECURITY_ATTRIBUTES sa = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
+        if (!CreatePipe(&readPipe, &writePipe, &sa, 0)) {
+            std::cerr << "Eroare la crearea pipe-ului.\n";
+            exit(1);
+        }
+
+        // Configurare proces copil
+        STARTUPINFOW si = { sizeof(STARTUPINFOW) };
+        PROCESS_INFORMATION pi = { 0 };
+        si.hStdOutput = writePipe;
+        si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+        si.dwFlags |= STARTF_USESTDHANDLES;
+
+        // Creare linie de comandă pentru procesul copil
+        std::wstringstream argsStream;
+        argsStream << L"ChildProcess.exe " << rangeStart << L" " << rangeEnd;
+        std::wstring commandLine = argsStream.str();
+
+        if (!CreateProcessW(
+            NULL, &commandLine[0], NULL, NULL, TRUE,
+            0, NULL, NULL, &si, &pi)) {
+            std::cerr << "Eroare la crearea procesului copil. Cod eroare: " << GetLastError() << "\n";
+            exit(1);
+        }
+
+        // Închidem capătul de scriere al pipe-ului în procesul părinte
+        CloseHandle(writePipe);
+        pipes.push_back({ readPipe, pi.hProcess });
     }
-    return true;
 }
 
-void gasestePrime(int start, int end, int pipeScriere) {
-    for (int i = start; i <= end; ++i) {
-        if (estePrim(i)) {
-            write(pipeScriere, &i, sizeof(i));
+void readFromChildren(std::vector<std::pair<HANDLE, HANDLE>>& pipes) {
+    for (auto& pipe : pipes) {
+        HANDLE readPipe = pipe.first;
+        HANDLE processHandle = pipe.second;
+
+        char buffer[4096];
+        DWORD bytesRead;
+
+        // Citim datele de la procesul copil
+        while (ReadFile(readPipe, buffer, sizeof(buffer) - 1, &bytesRead, NULL) && bytesRead > 0) {
+            buffer[bytesRead] = '\0'; // Încheiem șirul
+            std::cout << buffer;      // Afișăm datele
         }
+
+        // Închidem pipe-ul și așteptăm terminarea procesului copil
+        CloseHandle(readPipe);
+        WaitForSingleObject(processHandle, INFINITE);
+        CloseHandle(processHandle);
     }
-    int semnalFinal = -1; 
-    write(pipeScriere, &semnalFinal, sizeof(semnalFinal));
 }
 
-int main(int argc, char* argv[]) {
-    if (argc == 3) {
-        int start = atoi(argv[1]);
-        int end = atoi(argv[2]);
-        int pipeScriere = STDOUT_FILENO; 
-        gasestePrime(start, end, pipeScriere);
-        return 0;
-    }
+int main() {
+    std::vector<std::pair<HANDLE, HANDLE>> pipes;
+    int start = 1, step = 1000;
 
+    // Creăm procesele copil
+    createChildProcesses(pipes, start, 10000, step);
 
-    const int TOTAL_NUMERE = 10000;
-    const int NUMAR_PROCESE = 10;
-    const int DIMENSIUNE_INTERVAL = TOTAL_NUMERE / NUMAR_PROCESE;
+    // Citim rezultatele
+    readFromChildren(pipes);
 
-    int pipes[NUMAR_PROCESE][2];
-    pid_t procese[NUMAR_PROCESE];
-
-    for (int i = 0; i < NUMAR_PROCESE; ++i) {
-        if (pipe(pipes[i]) == -1) {
-            cerr << "Eroare la crearea pipe-ului!" << endl;
-            return 1;
-        }
-
-        pid_t pid = fork();
-        if (pid == -1) {
-            cerr << "Eroare la fork!" << endl;
-            return 1;
-        }
-
-        if (pid == 0) {
-
-            close(pipes[i][0]); 
-	    int start = i * DIMENSIUNE_INTERVAL + 1;
-            int end = start + DIMENSIUNE_INTERVAL - 1;
-            gasestePrime(start, end, pipes[i][1]);
-            close(pipes[i][1]); 
-        return 0;
-        } else {
-            procese[i] = pid;
-            close(pipes[i][1]); 
-	}
-    }
-
-    
-    cout << "Numere prime găsite de procesele secundare:\n";
-    for (int i = 0; i < NUMAR_PROCESE; ++i) {
-        int numarPrim;
-
-        while (read(pipes[i][0], &numarPrim, sizeof(numarPrim)) > 0) {
-            if (numarPrim == -1) break; 
-            cout << numarPrim << " "; 
-        }
-
-        close(pipes[i][0]);
-
-        waitpid(procese[i], NULL, 0);
-    }
-
-    cout << "\nAfișare finalizată.\n";
     return 0;
 }
