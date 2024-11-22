@@ -1,8 +1,9 @@
-﻿#include <iostream>
+#include <iostream>
 #include <vector>
 #include <string>
-#include <windows.h>
-#include <sstream>
+#include <unistd.h> 
+#include <sys/wait.h> 
+#include <fcntl.h>
 #include <cstdlib>
 using namespace std;
 
@@ -14,22 +15,21 @@ bool estePrim(int numar) {
     return true;
 }
 
-void gasestePrime(int start, int end, HANDLE pipeScriere) {
-    DWORD bytesScrise;
+void gasestePrime(int start, int end, int pipeScriere) {
     for (int i = start; i <= end; ++i) {
         if (estePrim(i)) {
-            WriteFile(pipeScriere, &i, sizeof(i), &bytesScrise, NULL);
+            write(pipeScriere, &i, sizeof(i));
         }
     }
-    int semnalFinal = -1;
-    WriteFile(pipeScriere, &semnalFinal, sizeof(semnalFinal), &bytesScrise, NULL);
+    int semnalFinal = -1; 
+    write(pipeScriere, &semnalFinal, sizeof(semnalFinal));
 }
 
 int main(int argc, char* argv[]) {
     if (argc == 3) {
         int start = atoi(argv[1]);
         int end = atoi(argv[2]);
-        HANDLE pipeScriere = GetStdHandle(STD_OUTPUT_HANDLE);
+        int pipeScriere = STDOUT_FILENO; 
         gasestePrime(start, end, pipeScriere);
         return 0;
     }
@@ -39,65 +39,50 @@ int main(int argc, char* argv[]) {
     const int NUMAR_PROCESE = 10;
     const int DIMENSIUNE_INTERVAL = TOTAL_NUMERE / NUMAR_PROCESE;
 
-    HANDLE pipes[NUMAR_PROCESE][2];       
-    PROCESS_INFORMATION procese[NUMAR_PROCESE];
-    STARTUPINFOA startupInfo[NUMAR_PROCESE];
-
+    int pipes[NUMAR_PROCESE][2];
+    pid_t procese[NUMAR_PROCESE];
 
     for (int i = 0; i < NUMAR_PROCESE; ++i) {
-        SECURITY_ATTRIBUTES secAttr;
-        secAttr.nLength = sizeof(SECURITY_ATTRIBUTES);
-        secAttr.lpSecurityDescriptor = NULL;
-        secAttr.bInheritHandle = TRUE;
-
-        if (!CreatePipe(&pipes[i][0], &pipes[i][1], &secAttr, 0)) {
+        if (pipe(pipes[i]) == -1) {
             cerr << "Eroare la crearea pipe-ului!" << endl;
             return 1;
         }
 
-        ZeroMemory(&startupInfo[i], sizeof(startupInfo[i]));
-        startupInfo[i].cb = sizeof(startupInfo[i]);
-        startupInfo[i].hStdOutput = pipes[i][1]; 
-        startupInfo[i].dwFlags |= STARTF_USESTDHANDLES;
-
-        int start = i * DIMENSIUNE_INTERVAL + 1;
-        int end = start + DIMENSIUNE_INTERVAL - 1;
-
-        stringstream comanda;
-        comanda << "\"" << argv[0] << "\" " << start << " " << end;
-
-        ZeroMemory(&procese[i], sizeof(procese[i]));
-        if (!CreateProcessA(NULL, const_cast<LPSTR>(comanda.str().c_str()),
-            NULL, NULL, TRUE, 0, NULL, NULL, &startupInfo[i], &procese[i])) {
-            cerr << "Eroare la crearea procesului!" << endl;
+        pid_t pid = fork();
+        if (pid == -1) {
+            cerr << "Eroare la fork!" << endl;
             return 1;
         }
 
-        CloseHandle(pipes[i][1]);
+        if (pid == 0) {
+
+            close(pipes[i][0]); 
+	    int start = i * DIMENSIUNE_INTERVAL + 1;
+            int end = start + DIMENSIUNE_INTERVAL - 1;
+            gasestePrime(start, end, pipes[i][1]);
+            close(pipes[i][1]); 
+        return 0;
+        } else {
+            procese[i] = pid;
+            close(pipes[i][1]); 
+	}
     }
 
-
-    cout << "Numere prime gasite de procesele secundare:\n";
+    
+    cout << "Numere prime găsite de procesele secundare:\n";
     for (int i = 0; i < NUMAR_PROCESE; ++i) {
-        DWORD bytesCitite;
         int numarPrim;
 
-        while (true) {
-            if (ReadFile(pipes[i][0], &numarPrim, sizeof(numarPrim), &bytesCitite, NULL) && bytesCitite > 0) {
-                if (numarPrim == -1) break;
-                cout << numarPrim << " ";
-            }
-            else {
-                break;
-            }
+        while (read(pipes[i][0], &numarPrim, sizeof(numarPrim)) > 0) {
+            if (numarPrim == -1) break; 
+            cout << numarPrim << " "; 
         }
 
-        CloseHandle(pipes[i][0]);
+        close(pipes[i][0]);
 
-        WaitForSingleObject(procese[i].hProcess, INFINITE);
-        CloseHandle(procese[i].hProcess);
-        CloseHandle(procese[i].hThread);
+        waitpid(procese[i], NULL, 0);
     }
 
+    cout << "\nAfișare finalizată.\n";
     return 0;
 }
